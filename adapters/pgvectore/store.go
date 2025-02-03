@@ -1,4 +1,4 @@
-package pgvector
+package pgvectore
 
 import (
 	"context"
