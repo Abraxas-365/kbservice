@@ -140,11 +140,13 @@ func (p *PGVectorStore) AddDocuments(ctx context.Context, docs []vectorstore.Doc
 
 	insertSQL := fmt.Sprintf(`
 		INSERT INTO %s (content, metadata, embedding)
-		VALUES ($1, $2, $3)
+		VALUES ($1, $2, $3::vector)
 	`, p.tableName)
 
 	for i, doc := range docs {
-		batch.Queue(insertSQL, doc.PageContent, doc.Metadata, vectors[i])
+		// Convert the vector to a PostgreSQL array format
+		vectorStr := formatVectorForPG(vectors[i])
+		batch.Queue(insertSQL, doc.PageContent, doc.Metadata, vectorStr)
 	}
 
 	results := p.pool.SendBatch(ctx, batch)
@@ -163,9 +165,12 @@ func (p *PGVectorStore) AddDocuments(ctx context.Context, docs []vectorstore.Doc
 func (p *PGVectorStore) SimilaritySearch(ctx context.Context, vector []float32, limit int, filter vectorstore.Filter) ([]vectorstore.Document, error) {
 	operator, _ := p.getOperatorAndFunction()
 
+	// Format vector for PostgreSQL
+	vectorStr := formatVectorForPG(vector)
+
 	// Build the query with filters
 	whereClause := ""
-	args := []interface{}{vector, limit}
+	args := []interface{}{vectorStr, limit}
 	if len(filter) > 0 {
 		conditions := make([]string, 0)
 		for key, value := range filter {
@@ -179,11 +184,11 @@ func (p *PGVectorStore) SimilaritySearch(ctx context.Context, vector []float32, 
 	scoreExpr := ""
 	switch p.distance {
 	case Cosine:
-		scoreExpr = fmt.Sprintf("1 - (embedding %s $1)", operator)
+		scoreExpr = fmt.Sprintf("1 - (embedding %s $1::vector)", operator)
 	case InnerProduct:
-		scoreExpr = fmt.Sprintf("(embedding %s $1) * -1", operator)
+		scoreExpr = fmt.Sprintf("(embedding %s $1::vector) * -1", operator)
 	case Euclidean:
-		scoreExpr = fmt.Sprintf("1 / (1 + (embedding %s $1))", operator)
+		scoreExpr = fmt.Sprintf("1 / (1 + (embedding %s $1::vector))", operator)
 	}
 
 	query := fmt.Sprintf(`
@@ -193,7 +198,7 @@ func (p *PGVectorStore) SimilaritySearch(ctx context.Context, vector []float32, 
 			%s as similarity
 		FROM %s
 		%s
-		ORDER BY embedding %s $1
+		ORDER BY embedding %s $1::vector
 		LIMIT $2
 	`, scoreExpr, p.tableName, whereClause, operator)
 
@@ -218,6 +223,20 @@ func (p *PGVectorStore) SimilaritySearch(ctx context.Context, vector []float32, 
 	}
 
 	return docs, nil
+}
+
+// formatVectorForPG converts a float32 slice to a PostgreSQL vector format
+func formatVectorForPG(vector []float32) string {
+	var b strings.Builder
+	b.WriteString("[")
+	for i, v := range vector {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(fmt.Sprintf("%.9f", float64(v))) // Use more precision
+	}
+	b.WriteString("]")
+	return b.String()
 }
 
 func (p *PGVectorStore) Delete(ctx context.Context, filter vectorstore.Filter) error {

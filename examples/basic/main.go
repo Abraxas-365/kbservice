@@ -1,4 +1,3 @@
-// examples/basic/main.go
 package main
 
 import (
@@ -14,6 +13,13 @@ import (
 )
 
 func main() {
+	required := []string{"OPENAI_API_KEY", "DATABASE_URL"}
+	for _, req := range required {
+		if os.Getenv(req) == "" {
+			log.Fatalf("Missing required environment variable: %s", req)
+		}
+	}
+
 	ctx := context.Background()
 
 	// Initialize components
@@ -97,6 +103,7 @@ func main() {
 		"What do you know about animals?",
 		"Tell me about programming",
 		"Facts about space",
+		"Hola como estas",
 	}
 
 	for _, query := range searches {
