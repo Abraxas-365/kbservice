@@ -12,19 +12,17 @@ import (
 
 // KnowledgeBase represents the main knowledge base system
 type KnowledgeBase struct {
-	embedder   embedding.Embedder
-	vStore     *vectorstore.VectorStore
-	store      vectorstore.Store
-	datasource datasource.DataSource
-	splitter   document.Splitter
-	opts       *Options
+	embedder embedding.Embedder
+	vStore   *vectorstore.VectorStore
+	store    vectorstore.Store
+	splitter document.Splitter
+	opts     *Options
 }
 
 // New creates a new KnowledgeBase instance with the provided options
 func New(
 	embedder embedding.Embedder,
 	store vectorstore.Store,
-	datasource datasource.DataSource,
 	splitter document.Splitter,
 	opts ...Option,
 ) (*KnowledgeBase, error) {
@@ -49,12 +47,11 @@ func New(
 	)
 
 	kb := &KnowledgeBase{
-		embedder:   embedder,
-		vStore:     vStore,
-		store:      store,
-		datasource: datasource,
-		splitter:   splitter,
-		opts:       options,
+		embedder: embedder,
+		vStore:   vStore,
+		store:    store,
+		splitter: splitter,
+		opts:     options,
 	}
 
 	return kb, nil
@@ -102,4 +99,51 @@ func (kb *KnowledgeBase) Close() error {
 
 func (kb *KnowledgeBase) InitStore(ctx context.Context, forceRecreate bool) error {
 	return kb.store.InitDB(ctx, forceRecreate)
+}
+
+func (kb *KnowledgeBase) Sync(ctx context.Context, ds datasource.DataSource) error {
+	docChan, errChan := ds.Stream(ctx)
+	for {
+		select {
+		case doc, ok := <-docChan:
+			if !ok {
+				return nil
+			}
+			if err := kb.processData(ctx, doc); err != nil {
+				return err
+			}
+		case err := <-errChan:
+			return err
+		}
+	}
+}
+
+func (kb *KnowledgeBase) processData(ctx context.Context, doc datasource.Document) error {
+	doc.Metadata["source"] = doc.Source
+	docu := document.Document{
+		PageContent: doc.Content,
+		Metadata:    doc.Metadata,
+	}
+
+	chucks, err := document.SplitDocuments(kb.splitter, []document.Document{docu})
+	if err != nil {
+		return err
+	}
+
+	exist, err := kb.vStore.DocumentExists(ctx, chucks)
+	if err != nil {
+		return err
+	}
+
+	documentToAdd := []document.Document{}
+	for i, doc := range chucks {
+		if exist[i] {
+			continue
+		}
+		documentToAdd = append(documentToAdd, doc)
+	}
+
+	kb.vStore.AddDocuments(ctx, documentToAdd)
+
+	return nil
 }

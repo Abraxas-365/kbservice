@@ -45,6 +45,8 @@ type Store interface {
 	Delete(ctx context.Context, filter Filter) error
 
 	InitDB(ctx context.Context, forceRecreate bool) error
+
+	DocumentExists(ctx context.Context, docs []document.Document) ([]bool, error)
 }
 
 // VectorStore is the main struct that combines the database adapter and embedder
@@ -123,6 +125,10 @@ func (vs *VectorStore) SimilaritySearch(ctx context.Context, query string, limit
 	}
 
 	return docs, nil
+}
+
+func (vs *VectorStore) DocumentExists(ctx context.Context, docs []document.Document) ([]bool, error) {
+	return vs.store.DocumentExists(ctx, docs)
 }
 
 // Delete removes documents from the store

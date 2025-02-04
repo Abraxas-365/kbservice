@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Abraxas-365/kbservice/document"
 	"github.com/Abraxas-365/kbservice/vectorstore"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -157,7 +158,19 @@ func (p *PGVectorStore) InitDB(ctx context.Context, forceRecreate bool) error {
 		return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to create index: %w", err))
 	}
 
+	// Create index for content and metadata lookups
+	contentIndexSQL := fmt.Sprintf(`
+        CREATE INDEX IF NOT EXISTS %s_content_metadata_idx 
+        ON %s (content, metadata)
+    `, p.tableName, p.tableName)
+
+	_, err = p.pool.Exec(ctx, contentIndexSQL)
+	if err != nil {
+		return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to create content index: %w", err))
+	}
+
 	return nil
+
 }
 
 func (p *PGVectorStore) AddDocuments(ctx context.Context, docs []vectorstore.Document, vectors [][]float32) error {
@@ -322,4 +335,34 @@ func formatVectorForPG(vector []float32) string {
 	}
 	b.WriteString("]")
 	return b.String()
+}
+
+func (p *PGVectorStore) DocumentExists(ctx context.Context, docs []document.Document) ([]bool, error) {
+	exists := make([]bool, len(docs))
+
+	batch := &pgx.Batch{}
+	selectSQL := fmt.Sprintf(`
+        SELECT EXISTS (
+            SELECT 1 FROM %s 
+            WHERE content = $1 
+            AND metadata = $2::jsonb
+        )
+    `, p.tableName)
+
+	for _, doc := range docs {
+		batch.Queue(selectSQL, doc.PageContent, doc.Metadata)
+	}
+
+	results := p.pool.SendBatch(ctx, batch)
+	defer results.Close()
+
+	for i := range docs {
+		err := results.QueryRow().Scan(&exists[i])
+		if err != nil {
+			return nil, vectorstore.NewSearchFailedError("pgvector",
+				fmt.Errorf("failed to check document existence: %w", err))
+		}
+	}
+
+	return exists, nil
 }
