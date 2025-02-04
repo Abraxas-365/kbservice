@@ -109,3 +109,62 @@ func (w *WebSource) fetchURL(ctx context.Context, url string) (string, error) {
 
 	return string(content), nil
 }
+
+func (w *WebSource) Stream(ctx context.Context, opts ...datasource.Option) (<-chan datasource.Document, <-chan error) {
+	docChan := make(chan datasource.Document)
+	errChan := make(chan error, 1) // buffered channel for error
+
+	options := &datasource.LoadOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	go func() {
+		defer close(docChan)
+		defer close(errChan)
+
+		count := 0
+		for _, url := range w.urls {
+			if options.MaxItems > 0 && count >= options.MaxItems {
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				errChan <- ctx.Err()
+				return
+			default:
+			}
+
+			metadata := map[string]interface{}{
+				"url": url,
+			}
+
+			if options.Filter != nil && !options.Filter(metadata) {
+				continue
+			}
+
+			content, err := w.fetchURL(ctx, url)
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			doc := datasource.Document{
+				Content:  content,
+				Metadata: metadata,
+				Source:   url,
+			}
+
+			select {
+			case docChan <- doc:
+				count++
+			case <-ctx.Done():
+				errChan <- ctx.Err()
+				return
+			}
+		}
+	}()
+
+	return docChan, errChan
+}
