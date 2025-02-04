@@ -61,17 +61,34 @@ func NewPGVectorStore(ctx context.Context, connString string, opts Options) (*PG
 	}
 
 	if !opts.Distance.IsValid() {
-		return nil, fmt.Errorf("invalid distance metric: %s", opts.Distance)
+		return nil, &vectorstore.VectorStoreError{
+			Code:    vectorstore.ErrCodeInitFailed,
+			Op:      "NewPGVectorStore",
+			Store:   "pgvector",
+			Message: fmt.Sprintf("invalid distance metric: %s", opts.Distance),
+		}
 	}
 
 	config, err := pgxpool.ParseConfig(connString)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing connection string: %w", err)
+		return nil, &vectorstore.VectorStoreError{
+			Code:    vectorstore.ErrCodeInitFailed,
+			Op:      "NewPGVectorStore",
+			Store:   "pgvector",
+			Message: "error parsing connection string",
+			Err:     err,
+		}
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("error creating connection pool: %w", err)
+		return nil, &vectorstore.VectorStoreError{
+			Code:    vectorstore.ErrCodeInitFailed,
+			Op:      "NewPGVectorStore",
+			Store:   "pgvector",
+			Message: "error creating connection pool",
+			Err:     err,
+		}
 	}
 
 	store := &PGVectorStore{
@@ -84,67 +101,80 @@ func NewPGVectorStore(ctx context.Context, connString string, opts Options) (*PG
 	return store, nil
 }
 
-// InitDB initializes the database schema
 func (p *PGVectorStore) InitDB(ctx context.Context, forceRecreate bool) error {
+	// Check if table exists
+	if !forceRecreate {
+		var exists bool
+		err := p.pool.QueryRow(ctx,
+			"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)",
+			p.tableName).Scan(&exists)
+		if err == nil && exists {
+			return vectorstore.NewDBExistsError("pgvector", nil)
+		}
+	}
+
 	// Enable pgvector extension
 	_, err := p.pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector")
 	if err != nil {
-		return fmt.Errorf("error creating vector extension: %w", err)
+		return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to create vector extension: %w", err))
 	}
 
 	// Drop table if forceRecreate is true
 	if forceRecreate {
 		_, err = p.pool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", p.tableName))
 		if err != nil {
-			return fmt.Errorf("error dropping table: %w", err)
+			return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to drop table: %w", err))
 		}
 	}
 
-	// Create table if not exists
+	// Create table
 	createTableSQL := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s (
-			id SERIAL PRIMARY KEY,
-			content TEXT NOT NULL,
-			metadata JSONB,
-			embedding vector(%d),
-			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-		)
-	`, p.tableName, p.dimension)
+        CREATE TABLE IF NOT EXISTS %s (
+            id SERIAL PRIMARY KEY,
+            content TEXT NOT NULL,
+            metadata JSONB,
+            embedding vector(%d),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    `, p.tableName, p.dimension)
 
 	_, err = p.pool.Exec(ctx, createTableSQL)
 	if err != nil {
-		return fmt.Errorf("error creating table: %w", err)
+		return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to create table: %w", err))
 	}
 
-	// Get the appropriate operator class for the index
+	// Create index
 	_, opClass := p.getOperatorAndFunction()
-
-	// Create index for vector similarity search
 	indexSQL := fmt.Sprintf(`
-		CREATE INDEX IF NOT EXISTS %s_embedding_idx 
-		ON %s 
-		USING ivfflat (embedding %s)
-		WITH (lists = 100)
-	`, p.tableName, p.tableName, opClass)
+        CREATE INDEX IF NOT EXISTS %s_embedding_idx 
+        ON %s 
+        USING ivfflat (embedding %s)
+        WITH (lists = 100)
+    `, p.tableName, p.tableName, opClass)
 
 	_, err = p.pool.Exec(ctx, indexSQL)
 	if err != nil {
-		return fmt.Errorf("error creating index: %w", err)
+		return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to create index: %w", err))
 	}
 
 	return nil
 }
 
 func (p *PGVectorStore) AddDocuments(ctx context.Context, docs []vectorstore.Document, vectors [][]float32) error {
-	batch := &pgx.Batch{}
+	// Validate vector dimensions
+	for _, vec := range vectors {
+		if len(vec) != p.dimension {
+			return vectorstore.NewInvalidDimensionsError("pgvector", p.dimension, len(vec))
+		}
+	}
 
+	batch := &pgx.Batch{}
 	insertSQL := fmt.Sprintf(`
-		INSERT INTO %s (content, metadata, embedding)
-		VALUES ($1, $2, $3::vector)
-	`, p.tableName)
+        INSERT INTO %s (content, metadata, embedding)
+        VALUES ($1, $2, $3::vector)
+    `, p.tableName)
 
 	for i, doc := range docs {
-		// Convert the vector to a PostgreSQL array format
 		vectorStr := formatVectorForPG(vectors[i])
 		batch.Queue(insertSQL, doc.PageContent, doc.Metadata, vectorStr)
 	}
@@ -155,7 +185,7 @@ func (p *PGVectorStore) AddDocuments(ctx context.Context, docs []vectorstore.Doc
 	for i := 0; i < len(docs); i++ {
 		_, err := results.Exec()
 		if err != nil {
-			return fmt.Errorf("error inserting document %d: %w", i, err)
+			return vectorstore.NewAddFailedError("pgvector", fmt.Errorf("failed to insert document %d: %w", i, err))
 		}
 	}
 
@@ -163,48 +193,38 @@ func (p *PGVectorStore) AddDocuments(ctx context.Context, docs []vectorstore.Doc
 }
 
 func (p *PGVectorStore) SimilaritySearch(ctx context.Context, vector []float32, limit int, filter vectorstore.Filter) ([]vectorstore.Document, error) {
-	operator, _ := p.getOperatorAndFunction()
+	// Validate vector dimension
+	if len(vector) != p.dimension {
+		return nil, vectorstore.NewInvalidDimensionsError("pgvector", p.dimension, len(vector))
+	}
 
-	// Format vector for PostgreSQL
+	// Validate filter
+	if err := p.validateFilter(filter); err != nil {
+		return nil, vectorstore.NewInvalidFilterError("pgvector", err.Error())
+	}
+
+	operator, _ := p.getOperatorAndFunction()
 	vectorStr := formatVectorForPG(vector)
 
-	// Build the query with filters
-	whereClause := ""
-	args := []interface{}{vectorStr, limit}
-	if len(filter) > 0 {
-		conditions := make([]string, 0)
-		for key, value := range filter {
-			args = append(args, value)
-			conditions = append(conditions, fmt.Sprintf("metadata->>'%s' = $%d", key, len(args)))
-		}
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
-	}
+	// Build query with filters
+	whereClause, args := p.buildWhereClause(filter)
+	args = append([]interface{}{vectorStr, limit}, args...)
 
-	// Adjust score calculation based on distance metric
-	scoreExpr := ""
-	switch p.distance {
-	case Cosine:
-		scoreExpr = fmt.Sprintf("1 - (embedding %s $1::vector)", operator)
-	case InnerProduct:
-		scoreExpr = fmt.Sprintf("(embedding %s $1::vector) * -1", operator)
-	case Euclidean:
-		scoreExpr = fmt.Sprintf("1 / (1 + (embedding %s $1::vector))", operator)
-	}
-
+	scoreExpr := p.buildScoreExpression(operator)
 	query := fmt.Sprintf(`
-		SELECT 
-			content,
-			metadata,
-			%s as similarity
-		FROM %s
-		%s
-		ORDER BY embedding %s $1::vector
-		LIMIT $2
-	`, scoreExpr, p.tableName, whereClause, operator)
+        SELECT 
+            content,
+            metadata,
+            %s as similarity
+        FROM %s
+        %s
+        ORDER BY embedding %s $1::vector
+        LIMIT $2
+    `, scoreExpr, p.tableName, whereClause, operator)
 
 	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("error executing similarity search: %w", err)
+		return nil, vectorstore.NewSearchFailedError("pgvector", err)
 	}
 	defer rows.Close()
 
@@ -213,16 +233,81 @@ func (p *PGVectorStore) SimilaritySearch(ctx context.Context, vector []float32, 
 		var doc vectorstore.Document
 		err := rows.Scan(&doc.PageContent, &doc.Metadata, &doc.Score)
 		if err != nil {
-			return nil, fmt.Errorf("error scanning row: %w", err)
+			return nil, vectorstore.NewSearchFailedError("pgvector", fmt.Errorf("failed to scan row: %w", err))
 		}
 		docs = append(docs, doc)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating rows: %w", err)
+		return nil, vectorstore.NewSearchFailedError("pgvector", err)
 	}
 
 	return docs, nil
+}
+
+func (p *PGVectorStore) Delete(ctx context.Context, filter vectorstore.Filter) error {
+	if err := p.validateFilter(filter); err != nil {
+		return vectorstore.NewInvalidFilterError("pgvector", err.Error())
+	}
+
+	whereClause, args := p.buildWhereClause(filter)
+	query := fmt.Sprintf("DELETE FROM %s %s", p.tableName, whereClause)
+
+	_, err := p.pool.Exec(ctx, query, args...)
+	if err != nil {
+		return vectorstore.NewDeleteFailedError("pgvector", err)
+	}
+
+	return nil
+}
+
+// Helper methods
+
+func (p *PGVectorStore) validateFilter(filter vectorstore.Filter) error {
+	if filter == nil {
+		return nil
+	}
+
+	for key, value := range filter {
+		if key == "" {
+			return fmt.Errorf("empty key in filter")
+		}
+		if value == nil {
+			return fmt.Errorf("nil value for key %s", key)
+		}
+	}
+	return nil
+}
+
+func (p *PGVectorStore) buildWhereClause(filter vectorstore.Filter) (string, []interface{}) {
+	if len(filter) == 0 {
+		return "", nil
+	}
+
+	conditions := make([]string, 0)
+	args := make([]interface{}, 0)
+	i := 3 // Starting from 3 because $1 and $2 are used for vector and limit
+
+	for key, value := range filter {
+		args = append(args, value)
+		conditions = append(conditions, fmt.Sprintf("metadata->>'%s' = $%d", key, i))
+		i++
+	}
+
+	return "WHERE " + strings.Join(conditions, " AND "), args
+}
+
+func (p *PGVectorStore) buildScoreExpression(operator string) string {
+	switch p.distance {
+	case Cosine:
+		return fmt.Sprintf("1 - (embedding %s $1::vector)", operator)
+	case InnerProduct:
+		return fmt.Sprintf("(embedding %s $1::vector) * -1", operator)
+	case Euclidean:
+		return fmt.Sprintf("1 / (1 + (embedding %s $1::vector))", operator)
+	default:
+		return fmt.Sprintf("1 - (embedding %s $1::vector)", operator)
+	}
 }
 
 // formatVectorForPG converts a float32 slice to a PostgreSQL vector format
@@ -237,37 +322,4 @@ func formatVectorForPG(vector []float32) string {
 	}
 	b.WriteString("]")
 	return b.String()
-}
-
-func (p *PGVectorStore) Delete(ctx context.Context, filter vectorstore.Filter) error {
-	conditions := make([]string, 0)
-	args := make([]interface{}, 0)
-	i := 1
-
-	for key, value := range filter {
-		args = append(args, value)
-		conditions = append(conditions, fmt.Sprintf("metadata->>'%s' = $%d", key, i))
-		i++
-	}
-
-	whereClause := ""
-	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	query := fmt.Sprintf("DELETE FROM %s %s", p.tableName, whereClause)
-
-	_, err := p.pool.Exec(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("error deleting documents: %w", err)
-	}
-
-	return nil
-}
-
-// Close closes the database connection pool
-func (p *PGVectorStore) Close() {
-	if p.pool != nil {
-		p.pool.Close()
-	}
 }

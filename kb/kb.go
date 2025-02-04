@@ -10,6 +10,7 @@ import (
 type KnowledgeBase struct {
 	embedder   embedding.Embedder
 	vStore     vectorstore.VectorStore
+	store      vectorstore.Store
 	llm        *llm.LLM
 	datasource datasource.DataSource
 }

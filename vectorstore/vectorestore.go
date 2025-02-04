@@ -43,6 +43,8 @@ type Store interface {
 
 	// Delete removes documents from the store
 	Delete(ctx context.Context, filter Filter) error
+
+	InitDB(ctx context.Context, forceRecreate bool) error
 }
 
 // VectorStore is the main struct that combines the database adapter and embedder
