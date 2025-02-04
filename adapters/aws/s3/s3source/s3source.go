@@ -122,3 +122,94 @@ func (s *S3Source) getObjectContent(ctx context.Context, key string) (string, er
 
 	return string(content), nil
 }
+
+func (s *S3Source) Stream(ctx context.Context, opts ...datasource.Option) (<-chan datasource.Document, <-chan error) {
+	docChan := make(chan datasource.Document)
+	errChan := make(chan error, 1) // buffered channel for error
+
+	options := &datasource.LoadOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	go func() {
+		defer close(docChan)
+		defer close(errChan)
+
+		input := &s3.ListObjectsV2Input{
+			Bucket: &s.bucket,
+			Prefix: &s.prefix,
+		}
+
+		count := 0
+		paginator := s3.NewListObjectsV2Paginator(s.client, input)
+
+		for paginator.HasMorePages() {
+			if options.MaxItems > 0 && count >= options.MaxItems {
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				errChan <- ctx.Err()
+				return
+			default:
+			}
+
+			page, err := paginator.NextPage(ctx)
+			if err != nil {
+				errChan <- &datasource.DataSourceError{
+					Source:  "s3",
+					Op:      "Stream",
+					Err:     err,
+					Code:    datasource.ErrCodeInternal,
+					Message: "failed to list objects",
+				}
+				return
+			}
+
+			for _, obj := range page.Contents {
+				if options.MaxItems > 0 && count >= options.MaxItems {
+					return
+				}
+
+				if !options.Recursive && filepath.Dir(*obj.Key) != s.prefix {
+					continue
+				}
+
+				metadata := map[string]interface{}{
+					"key":           *obj.Key,
+					"last_modified": *obj.LastModified,
+					"size":          obj.Size,
+					"etag":          *obj.ETag,
+				}
+
+				if options.Filter != nil && !options.Filter(metadata) {
+					continue
+				}
+
+				content, err := s.getObjectContent(ctx, *obj.Key)
+				if err != nil {
+					errChan <- err
+					return
+				}
+
+				doc := datasource.Document{
+					Content:  content,
+					Metadata: metadata,
+					Source:   "s3://" + s.bucket + "/" + *obj.Key,
+				}
+
+				select {
+				case docChan <- doc:
+					count++
+				case <-ctx.Done():
+					errChan <- ctx.Err()
+					return
+				}
+			}
+		}
+	}()
+
+	return docChan, errChan
+}
