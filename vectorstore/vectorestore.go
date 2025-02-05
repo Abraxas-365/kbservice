@@ -60,7 +60,6 @@ type VectorStore struct {
 func New(store Store, embedder embedding.Embedder, opts ...Option) *VectorStore {
 	options := &Options{
 		ScoreThreshold: 0.0,
-		Distance:       Cosine,
 	}
 
 	for _, opt := range opts {

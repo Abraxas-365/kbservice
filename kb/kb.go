@@ -38,12 +38,8 @@ func New(
 	vStore := vectorstore.New(
 		store,
 		embedder,
-		vectorstore.WithNamespace(options.Namespace),
 		vectorstore.WithScoreThreshold(options.ScoreThreshold),
 		vectorstore.WithFilters(options.Filters),
-		vectorstore.WithIndexName(options.IndexName),
-		vectorstore.WithDimensions(options.Dimensions),
-		vectorstore.WithDistanceMetric(options.Distance),
 	)
 
 	kb := &KnowledgeBase{
@@ -72,12 +68,8 @@ func (kb *KnowledgeBase) UpdateOptions(opts ...Option) {
 	kb.vStore = vectorstore.New(
 		kb.store,
 		kb.embedder,
-		vectorstore.WithNamespace(kb.opts.Namespace),
 		vectorstore.WithScoreThreshold(kb.opts.ScoreThreshold),
 		vectorstore.WithFilters(kb.opts.Filters),
-		vectorstore.WithIndexName(kb.opts.IndexName),
-		vectorstore.WithDimensions(kb.opts.Dimensions),
-		vectorstore.WithDistanceMetric(kb.opts.Distance),
 	)
 }
 
@@ -146,4 +138,13 @@ func (kb *KnowledgeBase) processData(ctx context.Context, doc datasource.Documen
 	kb.vStore.AddDocuments(ctx, documentToAdd)
 
 	return nil
+}
+
+func (kb *KnowledgeBase) SimilaritySearch(
+	ctx context.Context,
+	query string,
+	limit int,
+	filter vectorstore.Filter,
+) ([]vectorstore.Document, error) {
+	return kb.vStore.SimilaritySearch(ctx, query, limit, filter)
 }

@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"errors"
+	"io"
 
 	"github.com/Abraxas-365/kbservice/llm"
 	"github.com/sashabaranov/go-openai"
@@ -26,7 +27,6 @@ func NewOpenAILLM(apiKey string, model string) *OpenAILLM {
 func (o *OpenAILLM) Chat(ctx context.Context, messages []llm.Message, opts ...llm.Option) (*llm.Message, error) {
 	options := &llm.ChatOptions{
 		Temperature: 0.7,
-		MaxTokens:   0, // 0 means no limit
 	}
 	for _, opt := range opts {
 		opt(options)
@@ -54,15 +54,31 @@ func (o *OpenAILLM) Chat(ctx context.Context, messages []llm.Message, opts ...ll
 		FrequencyPenalty: float32(options.FrequencyPenalty),
 	}
 
-	// Add functions if provided
+	// Add tools if functions are provided
 	if len(options.Functions) > 0 {
-		req.Functions = make([]openai.FunctionDefinition, len(options.Functions))
+		tools := make([]openai.Tool, len(options.Functions))
 		for i, f := range options.Functions {
-			req.Functions[i] = openai.FunctionDefinition{
-				Name:        f.Name,
-				Description: f.Description,
-				Parameters:  f.Parameters,
+			tools[i] = openai.Tool{
+				Type: openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{
+					Name:        f.Name,
+					Description: f.Description,
+					Parameters:  f.Parameters,
+				},
 			}
+		}
+		req.Tools = tools
+
+		// Set tool choice
+		if options.FunctionCall != "" {
+			req.ToolChoice = &openai.ToolChoice{
+				Type: openai.ToolTypeFunction,
+				Function: openai.ToolFunction{
+					Name: options.FunctionCall,
+				},
+			}
+		} else {
+			req.ToolChoice = "auto"
 		}
 	}
 
@@ -78,17 +94,28 @@ func (o *OpenAILLM) Chat(ctx context.Context, messages []llm.Message, opts ...ll
 		}
 	}
 
-	return &llm.Message{
+	// Convert response to Message
+	message := &llm.Message{
 		Role:    resp.Choices[0].Message.Role,
 		Content: resp.Choices[0].Message.Content,
 		Name:    resp.Choices[0].Message.Name,
-	}, nil
+	}
+
+	// Handle tool calls in response
+	if len(resp.Choices[0].Message.ToolCalls) > 0 {
+		toolCall := resp.Choices[0].Message.ToolCalls[0]
+		message.FuncCall = &llm.FunctionCall{
+			Name:      toolCall.Function.Name,
+			Arguments: toolCall.Function.Arguments,
+		}
+	}
+
+	return message, nil
 }
 
 func (o *OpenAILLM) ChatStream(ctx context.Context, messages []llm.Message, opts ...llm.Option) (<-chan llm.StreamResponse, error) {
 	options := &llm.ChatOptions{
 		Temperature: 0.7,
-		Stream:      true,
 	}
 	for _, opt := range opts {
 		opt(options)
@@ -115,6 +142,33 @@ func (o *OpenAILLM) ChatStream(ctx context.Context, messages []llm.Message, opts
 		FrequencyPenalty: float32(options.FrequencyPenalty),
 	}
 
+	// Add tools if functions are provided
+	if len(options.Functions) > 0 {
+		tools := make([]openai.Tool, len(options.Functions))
+		for i, f := range options.Functions {
+			tools[i] = openai.Tool{
+				Type: openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{
+					Name:        f.Name,
+					Description: f.Description,
+					Parameters:  f.Parameters,
+				},
+			}
+		}
+		req.Tools = tools
+
+		if options.FunctionCall != "" {
+			req.ToolChoice = &openai.ToolChoice{
+				Type: openai.ToolTypeFunction,
+				Function: openai.ToolFunction{
+					Name: options.FunctionCall,
+				},
+			}
+		} else {
+			req.ToolChoice = "auto"
+		}
+	}
+
 	stream, err := o.client.CreateChatCompletionStream(ctx, req)
 	if err != nil {
 		return nil, handleOpenAIError("ChatStream", err)
@@ -128,6 +182,12 @@ func (o *OpenAILLM) ChatStream(ctx context.Context, messages []llm.Message, opts
 
 		for {
 			response, err := stream.Recv()
+			if errors.Is(err, io.EOF) {
+				responseChan <- llm.StreamResponse{
+					Done: true,
+				}
+				return
+			}
 			if err != nil {
 				responseChan <- llm.StreamResponse{
 					Error: handleOpenAIError("ChatStream", err),
@@ -137,12 +197,37 @@ func (o *OpenAILLM) ChatStream(ctx context.Context, messages []llm.Message, opts
 			}
 
 			if len(response.Choices) > 0 {
-				responseChan <- llm.StreamResponse{
-					Message: llm.Message{
-						Role:    response.Choices[0].Delta.Role,
-						Content: response.Choices[0].Delta.Content,
-					},
-					Done: false,
+				choice := response.Choices[0]
+				if choice.Delta.Content != "" || choice.Delta.Role != "" {
+					responseChan <- llm.StreamResponse{
+						Message: llm.Message{
+							Role:    choice.Delta.Role,
+							Content: choice.Delta.Content,
+						},
+						Done: false,
+					}
+				}
+
+				// Handle tool calls in streaming response
+				if len(choice.Delta.ToolCalls) > 0 {
+					toolCall := choice.Delta.ToolCalls[0]
+					responseChan <- llm.StreamResponse{
+						Message: llm.Message{
+							Role: choice.Delta.Role,
+							FuncCall: &llm.FunctionCall{
+								Name:      toolCall.Function.Name,
+								Arguments: toolCall.Function.Arguments,
+							},
+						},
+						Done: false,
+					}
+				}
+
+				if choice.FinishReason == "stop" {
+					responseChan <- llm.StreamResponse{
+						Done: true,
+					}
+					return
 				}
 			}
 		}

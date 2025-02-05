@@ -30,13 +30,6 @@ func defaultOptions() *Options {
 	}
 }
 
-// WithNamespace sets the namespace for the knowledge base
-func WithNamespace(namespace string) Option {
-	return func(o *Options) {
-		o.Namespace = namespace
-	}
-}
-
 // WithScoreThreshold sets the minimum similarity score threshold
 func WithScoreThreshold(threshold float32) Option {
 	return func(o *Options) {
