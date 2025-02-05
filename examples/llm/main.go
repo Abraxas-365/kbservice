@@ -1,113 +1,146 @@
-// examples/llm/main.go
-
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/Abraxas-365/kbservice/adapters/openai"
 	"github.com/Abraxas-365/kbservice/llm"
 )
 
+type UserData struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	Phone string `json:"phone,omitempty"`
+}
+
 func main() {
 	ctx := context.Background()
 
-	// Initialize OpenAI LLM
 	llmClient := openai.NewOpenAILLM(
 		os.Getenv("OPENAI_API_KEY"),
-		"", // Use default model (gpt-4-turbo-preview)
+		"gpt-4-turbo-preview",
 	)
 
-	// Example 1: Simple completion
-	fmt.Println("=== Simple Completion ===")
-	response, err := llmClient.Complete(ctx, "What is the capital of France?")
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("Response: %s\n\n", response)
-
-	// Example 2: Chat with multiple messages
-	fmt.Println("=== Chat Conversation ===")
 	messages := []llm.Message{
 		{
-			Role:    llm.RoleSystem,
-			Content: "You are a helpful assistant that provides concise answers.",
-		},
-		{
-			Role:    llm.RoleUser,
-			Content: "What are the main benefits of using Go for backend development?",
-		},
-	}
-
-	chatResp, err := llmClient.Chat(ctx, messages)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("Assistant: %s\n\n", chatResp.Content)
-
-	// Example 3: Streaming response
-	fmt.Println("=== Streaming Response ===")
-	streamMessages := []llm.Message{
-		{
-			Role:    llm.RoleUser,
-			Content: "Write a short poem about coding.",
+			Role: llm.RoleSystem,
+			Content: "You are a Apple product seller manager, your objective is to lead " +
+				"the user to be a lead and get his data, but only ask for the data if the user " +
+				"is interesting in buying, or when he is considered a potential lead. Be friendly " +
+				"and professional.",
 		},
 	}
 
-	stream, err := llmClient.ChatStream(ctx, streamMessages)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Print("Assistant: ")
-	for response := range stream {
-		if response.Error != nil {
-			log.Fatal(response.Error)
-		}
-		fmt.Print(response.Message.Content)
-		if response.Done {
-			break
-		}
-	}
-	fmt.Println("\n")
-
-	// Example 4: Function calling
-	fmt.Println("=== Function Calling ===")
-	functionsMessages := []llm.Message{
-		{
-			Role:    llm.RoleUser,
-			Content: "What's the weather like in Paris?",
-		},
-	}
-
-	weatherFunction := llm.Function{
-		Name:        "get_weather",
-		Description: "Get the current weather in a location",
+	userDataTool := llm.Function{
+		Name:        "send_user_data",
+		Description: "Upsert user information",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"location": map[string]interface{}{
+				"name": map[string]interface{}{
 					"type":        "string",
-					"description": "The city and country",
+					"description": "User's full name",
 				},
-				"unit": map[string]interface{}{
+				"email": map[string]interface{}{
 					"type":        "string",
-					"enum":        []string{"celsius", "fahrenheit"},
-					"description": "The temperature unit",
+					"description": "User's email address",
+				},
+				"phone": map[string]interface{}{
+					"type":        "string",
+					"description": "User's phone number",
 				},
 			},
-			"required": []string{"location"},
+			"required": []string{"name", "email"},
 		},
 	}
 
-	functionResp, err := llmClient.Chat(ctx, functionsMessages,
-		llm.WithFunctions([]llm.Function{weatherFunction}),
-	)
-	if err != nil {
-		log.Fatal(err)
+	humanTool := llm.Function{
+		Name:        "ask_human",
+		Description: "Use this tool to ask information to the user when needed",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"question": map[string]interface{}{
+					"type":        "string",
+					"description": "The question to ask the user",
+				},
+			},
+			"required": []string{"question"},
+		},
 	}
-	fmt.Printf("Assistant: %s\n", functionResp.FuncCall.Arguments)
+
+	scanner := bufio.NewScanner(os.Stdin)
+	fmt.Println("Welcome to Apple Store Assistant! Type 'exit' to quit.")
+	fmt.Print("You: ")
+
+	for scanner.Scan() {
+		userInput := scanner.Text()
+		if strings.ToLower(userInput) == "exit" {
+			break
+		}
+
+		messages = append(messages, llm.Message{
+			Role:    llm.RoleUser,
+			Content: userInput,
+		})
+
+		// Get AI response
+		response, err := llmClient.Chat(ctx, messages,
+			llm.WithFunctions([]llm.Function{userDataTool, humanTool}),
+		)
+		if err != nil {
+			log.Printf("Error: %v\n", err)
+			continue
+		}
+
+		// Handle function calls
+		if response.FuncCall != nil {
+			switch response.FuncCall.Name {
+			case "send_user_data":
+				var userData UserData
+				if err := json.Unmarshal([]byte(response.FuncCall.Arguments), &userData); err != nil {
+					log.Printf("Error parsing user data: %v\n", err)
+					continue
+				}
+
+				messages = append(messages, *response)
+				messages = append(messages, llm.Message{
+					Role:    llm.RoleFunction,
+					Name:    "send_user_data",
+					Content: "User data saved successfully",
+				})
+
+				fmt.Printf("Assistant: Thank you! I've saved your information.\n")
+
+			case "ask_human":
+				var question struct {
+					Question string `json:"question"`
+				}
+				if err := json.Unmarshal([]byte(response.FuncCall.Arguments), &question); err != nil {
+					log.Printf("Error parsing question: %v\n", err)
+					continue
+				}
+
+				messages = append(messages, *response)
+				fmt.Printf("Assistant: %s\n", question.Question)
+				messages = append(messages, llm.Message{
+					Role:    llm.RoleAssistant,
+					Content: question.Question,
+				})
+			}
+		} else if response.Content != "" {
+			fmt.Printf("Assistant: %s\n", response.Content)
+			messages = append(messages, *response)
+		}
+
+		fmt.Print("You: ")
+	}
+
+	fmt.Println("\nThank you for using Apple Store Assistant!")
 }

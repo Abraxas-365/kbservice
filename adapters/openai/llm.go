@@ -26,7 +26,7 @@ func NewOpenAILLM(apiKey string, model string) *OpenAILLM {
 
 func (o *OpenAILLM) Chat(ctx context.Context, messages []llm.Message, opts ...llm.Option) (*llm.Message, error) {
 	options := &llm.ChatOptions{
-		Temperature: 0.7,
+		Temperature: 0.1,
 	}
 	for _, opt := range opts {
 		opt(options)
