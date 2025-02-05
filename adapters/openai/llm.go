@@ -113,9 +113,10 @@ func (o *OpenAILLM) Chat(ctx context.Context, messages []llm.Message, opts ...ll
 	return message, nil
 }
 
+// TODO: Fix tool calling in streaming
 func (o *OpenAILLM) ChatStream(ctx context.Context, messages []llm.Message, opts ...llm.Option) (<-chan llm.StreamResponse, error) {
 	options := &llm.ChatOptions{
-		Temperature: 0.7,
+		Temperature: 0.1,
 	}
 	for _, opt := range opts {
 		opt(options)
