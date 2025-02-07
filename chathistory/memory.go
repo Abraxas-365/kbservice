@@ -101,3 +101,7 @@ func (m *Memory) ClearHistory(ctx context.Context, conversationID string) error 
 func (m *Memory) GetMessageCount(ctx context.Context, conversationID string, filter Filter) (int, error) {
 	return m.repo.GetMessageCount(ctx, conversationID, filter)
 }
+
+func (m *Memory) GetID() string {
+	return m.opts.GenerateID()
+}
