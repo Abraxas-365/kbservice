@@ -65,12 +65,33 @@ func (m *Memory) GetMessages(ctx context.Context, conversationID string, limit i
 	if limit <= 0 {
 		limit = m.opts.ReturnLimit
 	}
-	return m.repo.GetMessages(ctx, conversationID, limit)
+	messages, err := m.repo.GetMessages(ctx, conversationID, limit)
+	if err != nil {
+		return nil, err
+	}
+	if m.opts.SystemPrompt != "" {
+		messages = append([]llm.Message{{
+			Role:    llm.RoleSystem,
+			Content: m.opts.SystemPrompt,
+		}}, messages...)
+	}
+	return messages, nil
+
 }
 
 // GetConversation retrieves a conversation by ID
 func (m *Memory) GetConversation(ctx context.Context, conversationID string) (*Conversation, error) {
-	return m.repo.GetConversation(ctx, conversationID)
+	cov, err := m.repo.GetConversation(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if m.opts.SystemPrompt != "" {
+		cov.Messages = append([]llm.Message{{
+			Role:    llm.RoleSystem,
+			Content: m.opts.SystemPrompt,
+		}}, cov.Messages...)
+	}
+	return cov, nil
 }
 
 // ListConversations retrieves all conversations with optional filters
