@@ -127,12 +127,14 @@ func (r *PostgresRepository) GetMessages(ctx context.Context, conversationID str
 	for rows.Next() {
 		var msg llm.Message
 		var functionCallJSON, metadataJSON []byte
+		var createdAt time.Time // Add this variable
 
 		err := rows.Scan(
 			&msg.Role,
 			&msg.Content,
 			&msg.Name,
 			&functionCallJSON,
+			&createdAt, // Add created_at
 			&metadataJSON,
 		)
 		if err != nil {
@@ -208,6 +210,7 @@ func (r *PostgresRepository) GetMessagesByFilter(ctx context.Context, conversati
 	defer rows.Close()
 
 	var messages []llm.Message
+	var createdAt time.Time // Add this variable
 	for rows.Next() {
 		var msg llm.Message
 		var functionCallJSON, metadataJSON []byte
@@ -217,6 +220,7 @@ func (r *PostgresRepository) GetMessagesByFilter(ctx context.Context, conversati
 			&msg.Content,
 			&msg.Name,
 			&functionCallJSON,
+			&createdAt, // Add created_at
 			&metadataJSON,
 		)
 		if err != nil {
@@ -286,6 +290,7 @@ func (r *PostgresRepository) DeleteConversation(ctx context.Context, conversatio
 }
 
 func (r *PostgresRepository) GetConversation(ctx context.Context, conversationID string) (*chathistory.Conversation, error) {
+	// First get the conversation details
 	query := `
 		SELECT id, metadata, created_at, updated_at
 		FROM conversations
@@ -312,6 +317,57 @@ func (r *PostgresRepository) GetConversation(ctx context.Context, conversationID
 		}
 	}
 
+	// Then get the messages
+	messagesQuery := `
+		SELECT role, content, name, function_call, created_at, metadata
+		FROM messages
+		WHERE conversation_id = $1
+		ORDER BY created_at ASC
+	`
+	rows, err := r.db.QueryContext(ctx, messagesQuery, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting messages: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []llm.Message
+	for rows.Next() {
+		var msg llm.Message
+		var functionCallJSON, metadataJSON []byte
+		var createdAt time.Time
+
+		err := rows.Scan(
+			&msg.Role,
+			&msg.Content,
+			&msg.Name,
+			&functionCallJSON,
+			&createdAt,
+			&metadataJSON,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("error scanning message: %w", err)
+		}
+
+		if len(functionCallJSON) > 0 {
+			if err := json.Unmarshal(functionCallJSON, &msg.FuncCall); err != nil {
+				return nil, fmt.Errorf("error unmarshaling function call: %w", err)
+			}
+		}
+
+		if len(metadataJSON) > 0 {
+			if err := json.Unmarshal(metadataJSON, &msg.Metadata); err != nil {
+				return nil, fmt.Errorf("error unmarshaling metadata: %w", err)
+			}
+		}
+
+		messages = append(messages, msg)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating messages: %w", err)
+	}
+
+	conv.Messages = messages
 	return &conv, nil
 }
 
