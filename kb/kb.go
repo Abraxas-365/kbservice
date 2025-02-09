@@ -111,6 +111,8 @@ func (kb *KnowledgeBase) Sync(ctx context.Context, ds datasource.DataSource) err
 }
 
 // TODO: think if we should add filters
+// Check if the document exist and if the modification date is the same
+// I dont want to chuch if it already exist and it does not being modified
 func (kb *KnowledgeBase) processData(ctx context.Context, doc datasource.Document) error {
 	doc.Metadata["source"] = doc.Source
 	docu := document.Document{
