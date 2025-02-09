@@ -110,6 +110,7 @@ func (kb *KnowledgeBase) Sync(ctx context.Context, ds datasource.DataSource) err
 	}
 }
 
+// TODO: think if we should add filters
 func (kb *KnowledgeBase) processData(ctx context.Context, doc datasource.Document) error {
 	doc.Metadata["source"] = doc.Source
 	docu := document.Document{
