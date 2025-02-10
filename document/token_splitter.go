@@ -57,6 +57,31 @@ func getEncodingForModel(model string) string {
 }
 
 func NewTiktokenSplitter(tokensPerChunk int, chunkOverlap int, model string) (*TiktokenSplitter, error) {
+	// Validate parameters
+	if tokensPerChunk <= 0 {
+		return nil, &SplitterError{
+			Op:      "new_tiktoken_splitter",
+			Message: "tokensPerChunk must be positive",
+			Err:     fmt.Errorf("invalid tokensPerChunk: %d", tokensPerChunk),
+		}
+	}
+
+	if chunkOverlap < 0 {
+		return nil, &SplitterError{
+			Op:      "new_tiktoken_splitter",
+			Message: "chunkOverlap must be non-negative",
+			Err:     fmt.Errorf("invalid chunkOverlap: %d", chunkOverlap),
+		}
+	}
+
+	if chunkOverlap >= tokensPerChunk {
+		return nil, &SplitterError{
+			Op:      "new_tiktoken_splitter",
+			Message: "chunkOverlap must be less than tokensPerChunk",
+			Err:     fmt.Errorf("overlap %d >= chunk size %d", chunkOverlap, tokensPerChunk),
+		}
+	}
+
 	encodingName := getEncodingForModel(model)
 	encoding, err := tiktoken.GetEncoding(encodingName)
 	if err != nil {
@@ -80,6 +105,7 @@ func (ts *TiktokenSplitter) SplitText(text string) ([]string, error) {
 		return nil, nil
 	}
 
+	// Get tokens for the text
 	tokens := ts.encoding.Encode(text, nil, nil)
 	if len(tokens) == 0 {
 		return nil, nil
@@ -88,24 +114,64 @@ func (ts *TiktokenSplitter) SplitText(text string) ([]string, error) {
 	var chunks []string
 	start := 0
 
+	// Add safety check for infinite loop
+	maxIterations := len(tokens) // Maximum possible chunks
+	iteration := 0
+
 	for start < len(tokens) {
+		// Safety check
+		iteration++
+		if iteration > maxIterations {
+			return nil, &SplitterError{
+				Op:      "split_text",
+				Message: "infinite loop detected in token splitting",
+				Err:     fmt.Errorf("exceeded maximum iterations of %d", maxIterations),
+			}
+		}
+
+		// Calculate end position
 		end := start + ts.TokensPerChunk
 		if end > len(tokens) {
 			end = len(tokens)
 		}
 
+		// Create chunk
 		chunkTokens := tokens[start:end]
 		chunk := ts.encoding.Decode(chunkTokens)
 		chunks = append(chunks, chunk)
 
+		// Calculate next start position and ensure forward progress
 		start = end - ts.ChunkOverlap
-		if start < 0 {
-			start = 0
-		}
-		if start >= len(tokens) {
+		if end == len(tokens) || start >= end {
 			break
 		}
 	}
 
 	return chunks, nil
+}
+
+func (ts *TiktokenSplitter) SplitDocuments(docs []Document) ([]Document, error) {
+	var result []Document
+
+	for _, doc := range docs {
+		chunks, err := ts.SplitText(doc.PageContent)
+		if err != nil {
+			return nil, &SplitterError{
+				Op:      "split_documents",
+				Message: "failed to split document text",
+				Err:     err,
+			}
+		}
+
+		for _, chunk := range chunks {
+			// Create a new document for each chunk with the same metadata
+			newDoc := Document{
+				PageContent: chunk,
+				Metadata:    doc.Metadata,
+			}
+			result = append(result, newDoc)
+		}
+	}
+
+	return result, nil
 }

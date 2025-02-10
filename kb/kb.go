@@ -93,6 +93,7 @@ func (kb *KnowledgeBase) InitStore(ctx context.Context, forceRecreate bool) erro
 	return kb.store.InitDB(ctx, forceRecreate)
 }
 
+// TODO: think if we should add filters
 func (kb *KnowledgeBase) Sync(ctx context.Context, ds datasource.DataSource) error {
 	docChan, errChan := ds.Stream(ctx)
 	for {
@@ -101,8 +102,15 @@ func (kb *KnowledgeBase) Sync(ctx context.Context, ds datasource.DataSource) err
 			if !ok {
 				return nil
 			}
-			if err := kb.processData(ctx, doc); err != nil {
+			// Check document existence before processing
+			exists, err := kb.documentNeedsUpdate(ctx, doc)
+			if err != nil {
 				return err
+			}
+			if !exists {
+				if err := kb.processData(ctx, doc); err != nil {
+					return err
+				}
 			}
 		case err := <-errChan:
 			return err
@@ -110,9 +118,23 @@ func (kb *KnowledgeBase) Sync(ctx context.Context, ds datasource.DataSource) err
 	}
 }
 
-// TODO: think if we should add filters
-// Check if the document exist and if the modification date is the same
-// I dont want to chuch if it already exist and it does not being modified
+func (kb *KnowledgeBase) documentNeedsUpdate(ctx context.Context, doc datasource.Document) (bool, error) {
+	// Create a document with just the metadata we need
+	checkDoc := document.Document{
+		Metadata: map[string]interface{}{
+			"source":        doc.Source,
+			"last_modified": doc.Metadata["last_modified"], // This can be nil if not present
+		},
+	}
+
+	exists, err := kb.vStore.DocumentExists(ctx, []document.Document{checkDoc})
+	if err != nil {
+		return false, err
+	}
+
+	return exists[0], nil
+}
+
 func (kb *KnowledgeBase) processData(ctx context.Context, doc datasource.Document) error {
 	doc.Metadata["source"] = doc.Source
 	docu := document.Document{
@@ -120,25 +142,15 @@ func (kb *KnowledgeBase) processData(ctx context.Context, doc datasource.Documen
 		Metadata:    doc.Metadata,
 	}
 
-	chucks, err := document.SplitDocuments(kb.splitter, []document.Document{docu})
+	chunks, err := document.SplitDocuments(kb.splitter, []document.Document{docu})
 	if err != nil {
 		return err
 	}
 
-	exist, err := kb.vStore.DocumentExists(ctx, chucks)
+	err = kb.vStore.AddDocuments(ctx, chunks)
 	if err != nil {
 		return err
 	}
-
-	documentToAdd := []document.Document{}
-	for i, doc := range chucks {
-		if exist[i] {
-			continue
-		}
-		documentToAdd = append(documentToAdd, doc)
-	}
-
-	kb.vStore.AddDocuments(ctx, documentToAdd)
 
 	return nil
 }

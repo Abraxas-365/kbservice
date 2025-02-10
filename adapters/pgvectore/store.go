@@ -144,33 +144,43 @@ func (p *PGVectorStore) InitDB(ctx context.Context, forceRecreate bool) error {
 		return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to create table: %w", err))
 	}
 
-	// Create index
+	// Create vector similarity index
 	_, opClass := p.getOperatorAndFunction()
-	indexSQL := fmt.Sprintf(`
+	vectorIndexSQL := fmt.Sprintf(`
         CREATE INDEX IF NOT EXISTS %s_embedding_idx 
         ON %s 
         USING ivfflat (embedding %s)
         WITH (lists = 100)
     `, p.tableName, p.tableName, opClass)
 
-	_, err = p.pool.Exec(ctx, indexSQL)
+	_, err = p.pool.Exec(ctx, vectorIndexSQL)
 	if err != nil {
-		return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to create index: %w", err))
+		return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to create vector index: %w", err))
 	}
 
-	// Create index for content and metadata lookups
-	contentIndexSQL := fmt.Sprintf(`
-        CREATE INDEX IF NOT EXISTS %s_content_metadata_idx 
-        ON %s (content, metadata)
+	// Create index for source and last_modified lookups
+	metadataIndexSQL := fmt.Sprintf(`
+        CREATE INDEX IF NOT EXISTS %s_metadata_source_lastmod_idx 
+        ON %s ((metadata->>'source'), (metadata->>'last_modified'))
     `, p.tableName, p.tableName)
 
-	_, err = p.pool.Exec(ctx, contentIndexSQL)
+	_, err = p.pool.Exec(ctx, metadataIndexSQL)
 	if err != nil {
-		return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to create content index: %w", err))
+		return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to create metadata index: %w", err))
+	}
+
+	// Create index for general metadata filters
+	filterIndexSQL := fmt.Sprintf(`
+        CREATE INDEX IF NOT EXISTS %s_metadata_gin_idx 
+        ON %s USING GIN (metadata)
+    `, p.tableName, p.tableName)
+
+	_, err = p.pool.Exec(ctx, filterIndexSQL)
+	if err != nil {
+		return vectorstore.NewInitFailedError("pgvector", fmt.Errorf("failed to create metadata GIN index: %w", err))
 	}
 
 	return nil
-
 }
 
 func (p *PGVectorStore) AddDocuments(ctx context.Context, docs []vectorstore.Document, vectors [][]float32) error {
@@ -344,13 +354,15 @@ func (p *PGVectorStore) DocumentExists(ctx context.Context, docs []document.Docu
 	selectSQL := fmt.Sprintf(`
         SELECT EXISTS (
             SELECT 1 FROM %s 
-            WHERE content = $1 
-            AND metadata = $2::jsonb
+            WHERE metadata->>'source' = $1 
+            AND metadata->>'last_modified' = $2::text
         )
     `, p.tableName)
 
 	for _, doc := range docs {
-		batch.Queue(selectSQL, doc.PageContent, doc.Metadata)
+		source, _ := doc.Metadata["source"].(string)
+		lastMod, _ := doc.Metadata["last_modified"].(string)
+		batch.Queue(selectSQL, source, lastMod)
 	}
 
 	results := p.pool.SendBatch(ctx, batch)
