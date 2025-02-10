@@ -268,17 +268,31 @@ func (p *PGVectorStore) SimilaritySearch(ctx context.Context, vector []float32, 
 	return docs, nil
 }
 
-func (p *PGVectorStore) Delete(ctx context.Context, filter vectorstore.Filter) error {
-	if err := p.validateFilter(filter); err != nil {
-		return vectorstore.NewInvalidFilterError("pgvector", err.Error())
+func (p *PGVectorStore) buildDeleteWhereClause(filter vectorstore.Filter) (string, []interface{}) {
+	if len(filter) == 0 {
+		return "", nil
 	}
 
-	whereClause, args := p.buildWhereClause(filter)
+	conditions := make([]string, 0)
+	args := make([]interface{}, 0)
+	i := 1 // Start from 1 for delete operations
+
+	for key, value := range filter {
+		args = append(args, value)
+		conditions = append(conditions, fmt.Sprintf("metadata->>'%s' = $%d", key, i))
+		i++
+	}
+
+	return "WHERE " + strings.Join(conditions, " AND "), args
+}
+
+func (p *PGVectorStore) Delete(ctx context.Context, filter vectorstore.Filter) error {
+	whereClause, args := p.buildDeleteWhereClause(filter)
 	query := fmt.Sprintf("DELETE FROM %s %s", p.tableName, whereClause)
 
 	_, err := p.pool.Exec(ctx, query, args...)
 	if err != nil {
-		return vectorstore.NewDeleteFailedError("pgvector", err)
+		return err
 	}
 
 	return nil
