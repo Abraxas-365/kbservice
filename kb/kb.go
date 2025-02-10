@@ -102,15 +102,8 @@ func (kb *KnowledgeBase) Sync(ctx context.Context, ds datasource.DataSource) err
 			if !ok {
 				return nil
 			}
-			// Check document existence before processing
-			exists, err := kb.documentNeedsUpdate(ctx, doc)
-			if err != nil {
+			if err := kb.processData(ctx, doc); err != nil {
 				return err
-			}
-			if !exists {
-				if err := kb.processData(ctx, doc); err != nil {
-					return err
-				}
 			}
 		case err := <-errChan:
 			return err
@@ -118,37 +111,50 @@ func (kb *KnowledgeBase) Sync(ctx context.Context, ds datasource.DataSource) err
 	}
 }
 
-func (kb *KnowledgeBase) documentNeedsUpdate(ctx context.Context, doc datasource.Document) (bool, error) {
-	// Create a document with just the metadata we need
+func (kb *KnowledgeBase) processData(ctx context.Context, doc datasource.Document) error {
+	// Add source to metadata
+	doc.Metadata["source"] = doc.Source
+
+	// Check if document exists and needs update
 	checkDoc := document.Document{
 		Metadata: map[string]interface{}{
 			"source":        doc.Source,
-			"last_modified": doc.Metadata["last_modified"], // This can be nil if not present
+			"last_modified": doc.Metadata["last_modified"],
 		},
 	}
 
 	exists, err := kb.vStore.DocumentExists(ctx, []document.Document{checkDoc})
 	if err != nil {
-		return false, err
+		return err
 	}
 
-	return exists[0], nil
-}
+	// If document exists with same metadata, skip processing
+	if exists[0] {
+		return nil
+	}
 
-func (kb *KnowledgeBase) processData(ctx context.Context, doc datasource.Document) error {
-	doc.Metadata["source"] = doc.Source
+	// Create document for splitting
 	docu := document.Document{
 		PageContent: doc.Content,
 		Metadata:    doc.Metadata,
 	}
 
+	// Split document into chunks
 	chunks, err := document.SplitDocuments(kb.splitter, []document.Document{docu})
 	if err != nil {
 		return err
 	}
 
-	err = kb.vStore.AddDocuments(ctx, chunks)
-	if err != nil {
+	// Delete existing document chunks if any (regardless of last_modified)
+	filter := vectorstore.Filter{
+		"source": doc.Source,
+	}
+	if err := kb.vStore.Delete(ctx, filter); err != nil {
+		return err
+	}
+
+	// Add new chunks
+	if err := kb.vStore.AddDocuments(ctx, chunks); err != nil {
 		return err
 	}
 
