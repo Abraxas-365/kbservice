@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Abraxas-365/kbservice/document"
 	"github.com/Abraxas-365/kbservice/vectorstore"
@@ -369,14 +370,29 @@ func (p *PGVectorStore) DocumentExists(ctx context.Context, docs []document.Docu
         SELECT EXISTS (
             SELECT 1 FROM %s 
             WHERE metadata->>'source' = $1 
-            AND metadata->>'last_modified' = $2::text
+            AND metadata->>'last_modified' = $2
         )
     `, p.tableName)
 
 	for _, doc := range docs {
 		source, _ := doc.Metadata["source"].(string)
-		lastMod, _ := doc.Metadata["last_modified"].(string)
-		batch.Queue(selectSQL, source, lastMod)
+		var lastModStr string
+
+		// Try to get last_modified as time.Time first
+		if lastMod, ok := doc.Metadata["last_modified"].(time.Time); ok {
+			lastModStr = lastMod.Format(time.RFC3339Nano)
+		} else if lastModStr, ok = doc.Metadata["last_modified"].(string); ok {
+			// If it's a string, try to parse it as time and reformat it
+			if t, err := time.Parse(time.RFC3339Nano, lastModStr); err == nil {
+				// If it's already in RFC3339Nano format
+				lastModStr = t.Format(time.RFC3339Nano)
+			} else if t, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 -07", lastModStr); err == nil {
+				// If it's in Go's default format
+				lastModStr = t.Format(time.RFC3339Nano)
+			}
+		}
+
+		batch.Queue(selectSQL, source, lastModStr)
 	}
 
 	results := p.pool.SendBatch(ctx, batch)
@@ -385,8 +401,7 @@ func (p *PGVectorStore) DocumentExists(ctx context.Context, docs []document.Docu
 	for i := range docs {
 		err := results.QueryRow().Scan(&exists[i])
 		if err != nil {
-			return nil, vectorstore.NewSearchFailedError("pgvector",
-				fmt.Errorf("failed to check document existence: %w", err))
+			return nil, err
 		}
 	}
 
