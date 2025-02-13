@@ -1,5 +1,18 @@
 package llm
 
+import "strings"
+
+const (
+	// SystemRole represents a system message
+	SystemRole = "system"
+	// UserRole represents a user message
+	UserRole = "user"
+	// AssistantRole represents an assistant message
+	AssistantRole = "assistant"
+	// FunctionRole represents a function message
+	FunctionRole = "function"
+)
+
 // Usage represents token usage statistics
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
@@ -56,4 +69,18 @@ func (m *Message) SetUsage(usage *Usage) {
 		"completion_tokens": usage.CompletionTokens,
 		"total_tokens":      usage.TotalTokens,
 	}
+}
+
+func MessagesToString(messages []Message) string {
+	var sb strings.Builder
+	for _, message := range messages {
+		if message.FuncCall != nil || message.Role == FunctionRole || message.Role == SystemRole {
+			continue
+		}
+		sb.WriteString(message.Role)
+		sb.WriteString(": ")
+		sb.WriteString(message.Content)
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
