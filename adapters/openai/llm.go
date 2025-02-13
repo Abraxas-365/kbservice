@@ -101,6 +101,14 @@ func (o *OpenAILLM) Chat(ctx context.Context, messages []llm.Message, opts ...ll
 		Name:    resp.Choices[0].Message.Name,
 	}
 
+	// Set usage information using the new Usage struct and helper method
+	usage := &llm.Usage{
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		TotalTokens:      resp.Usage.TotalTokens,
+	}
+	message.SetUsage(usage)
+
 	// Handle tool calls in response
 	if len(resp.Choices[0].Message.ToolCalls) > 0 {
 		toolCall := resp.Choices[0].Message.ToolCalls[0]
@@ -181,11 +189,24 @@ func (o *OpenAILLM) ChatStream(ctx context.Context, messages []llm.Message, opts
 		defer close(responseChan)
 		defer stream.Close()
 
+		usage := &llm.Usage{}
+
+		// Estimate prompt tokens from input messages
+		for _, msg := range messages {
+			// Rough estimation: 1 token ≈ 4 characters
+			usage.PromptTokens += len(msg.Content) / 4
+		}
+		usage.TotalTokens = usage.PromptTokens
+
 		for {
 			response, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
+				// Send final message with usage statistics
+				finalMessage := &llm.Message{}
+				finalMessage.SetUsage(usage)
 				responseChan <- llm.StreamResponse{
-					Done: true,
+					Message: *finalMessage,
+					Done:    true,
 				}
 				return
 			}
@@ -200,33 +221,52 @@ func (o *OpenAILLM) ChatStream(ctx context.Context, messages []llm.Message, opts
 			if len(response.Choices) > 0 {
 				choice := response.Choices[0]
 				if choice.Delta.Content != "" || choice.Delta.Role != "" {
+					// Increment completion tokens (approximate)
+					if choice.Delta.Content != "" {
+						usage.CompletionTokens += len(choice.Delta.Content) / 4
+						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+					}
+
+					message := &llm.Message{
+						Role:    choice.Delta.Role,
+						Content: choice.Delta.Content,
+					}
+					message.SetUsage(usage)
+
 					responseChan <- llm.StreamResponse{
-						Message: llm.Message{
-							Role:    choice.Delta.Role,
-							Content: choice.Delta.Content,
-						},
-						Done: false,
+						Message: *message,
+						Done:    false,
 					}
 				}
 
 				// Handle tool calls in streaming response
 				if len(choice.Delta.ToolCalls) > 0 {
 					toolCall := choice.Delta.ToolCalls[0]
-					responseChan <- llm.StreamResponse{
-						Message: llm.Message{
-							Role: choice.Delta.Role,
-							FuncCall: &llm.FunctionCall{
-								Name:      toolCall.Function.Name,
-								Arguments: toolCall.Function.Arguments,
-							},
+					// Increment tokens for function calls
+					usage.CompletionTokens += (len(toolCall.Function.Name) + len(toolCall.Function.Arguments)) / 4
+					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+
+					message := &llm.Message{
+						Role: choice.Delta.Role,
+						FuncCall: &llm.FunctionCall{
+							Name:      toolCall.Function.Name,
+							Arguments: toolCall.Function.Arguments,
 						},
-						Done: false,
+					}
+					message.SetUsage(usage)
+
+					responseChan <- llm.StreamResponse{
+						Message: *message,
+						Done:    false,
 					}
 				}
 
 				if choice.FinishReason == "stop" {
+					finalMessage := &llm.Message{}
+					finalMessage.SetUsage(usage)
 					responseChan <- llm.StreamResponse{
-						Done: true,
+						Message: *finalMessage,
+						Done:    true,
 					}
 					return
 				}
