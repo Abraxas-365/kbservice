@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 
@@ -52,6 +53,26 @@ func (o *OpenAILLM) Chat(ctx context.Context, messages []llm.Message, opts ...ll
 		Stop:             options.Stop,
 		PresencePenalty:  float32(options.PresencePenalty),
 		FrequencyPenalty: float32(options.FrequencyPenalty),
+	}
+
+	// Handle response format
+	if options.ResponseFormat != nil {
+		switch options.ResponseFormat.Type {
+		case llm.JSONSchema:
+			req.ResponseFormat = &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+				JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+					Name:        "response_schema",
+					Description: "The schema for the response",
+					Schema:      options.ResponseFormat.JSONSchema.(json.Marshaler),
+					Strict:      true,
+				},
+			}
+		case llm.JSONObject:
+			req.ResponseFormat = &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+			}
+		}
 	}
 
 	// Add tools if functions are provided
@@ -149,6 +170,26 @@ func (o *OpenAILLM) ChatStream(ctx context.Context, messages []llm.Message, opts
 		Stream:           true,
 		PresencePenalty:  float32(options.PresencePenalty),
 		FrequencyPenalty: float32(options.FrequencyPenalty),
+	}
+
+	// Handle response format
+	if options.ResponseFormat != nil {
+		switch options.ResponseFormat.Type {
+		case llm.JSONSchema:
+			req.ResponseFormat = &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+				JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+					Name:        "response_schema",
+					Description: "The schema for the response",
+					Schema:      options.ResponseFormat.JSONSchema.(json.Marshaler),
+					Strict:      true,
+				},
+			}
+		case llm.JSONObject:
+			req.ResponseFormat = &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+			}
+		}
 	}
 
 	// Add tools if functions are provided
