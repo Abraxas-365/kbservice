@@ -9,7 +9,7 @@ import (
 
 type Memory struct {
 	repo ChatHistoryRepository
-	opts *Options
+	Opts *Options
 }
 
 func New(repo ChatHistoryRepository, opts ...Option) *Memory {
@@ -20,14 +20,14 @@ func New(repo ChatHistoryRepository, opts ...Option) *Memory {
 
 	return &Memory{
 		repo: repo,
-		opts: options,
+		Opts: options,
 	}
 }
 
 // CreateConversation creates a new conversation
 func (m *Memory) CreateConversation(ctx context.Context, metadata map[string]any) (*Conversation, error) {
 	conv := Conversation{
-		ID:        m.opts.GenerateID(),
+		ID:        m.Opts.GenerateID(),
 		Metadata:  metadata,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -63,16 +63,16 @@ func (m *Memory) AddMessage(ctx context.Context, conversationID string, msg llm.
 // GetMessages retrieves messages from a specific conversation
 func (m *Memory) GetMessages(ctx context.Context, conversationID string, limit int) ([]llm.Message, error) {
 	if limit <= 0 {
-		limit = m.opts.ReturnLimit
+		limit = m.Opts.ReturnLimit
 	}
 	messages, err := m.repo.GetMessages(ctx, conversationID, limit)
 	if err != nil {
 		return nil, err
 	}
-	if m.opts.SystemPrompt != "" {
+	if m.Opts.SystemPrompt != "" {
 		messages = append([]llm.Message{{
 			Role:    llm.RoleSystem,
-			Content: m.opts.SystemPrompt,
+			Content: m.Opts.SystemPrompt,
 		}}, messages...)
 	}
 	return messages, nil
@@ -85,10 +85,10 @@ func (m *Memory) GetConversation(ctx context.Context, conversationID string) (*C
 	if err != nil {
 		return nil, err
 	}
-	if m.opts.SystemPrompt != "" {
+	if m.Opts.SystemPrompt != "" {
 		cov.Messages = append([]llm.Message{{
 			Role:    llm.RoleSystem,
-			Content: m.opts.SystemPrompt,
+			Content: m.Opts.SystemPrompt,
 		}}, cov.Messages...)
 	}
 	return cov, nil
@@ -111,7 +111,7 @@ func (m *Memory) UpdateConversationMetadata(ctx context.Context, conversationID 
 
 // GetMessagesByFilter retrieves messages using filter from a specific conversation
 func (m *Memory) GetMessagesByFilter(ctx context.Context, conversationID string, filter Filter) ([]llm.Message, error) {
-	return m.repo.GetMessagesByFilter(ctx, conversationID, filter, m.opts.ReturnLimit)
+	return m.repo.GetMessagesByFilter(ctx, conversationID, filter, m.Opts.ReturnLimit)
 }
 
 // ClearHistory clears all messages from a specific conversation
@@ -124,5 +124,5 @@ func (m *Memory) GetMessageCount(ctx context.Context, conversationID string, fil
 }
 
 func (m *Memory) GetID() string {
-	return m.opts.GenerateID()
+	return m.Opts.GenerateID()
 }
