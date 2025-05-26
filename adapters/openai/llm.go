@@ -36,11 +36,29 @@ func (o *OpenAILLM) Chat(ctx context.Context, messages []llm.Message, opts ...ll
 	// Convert messages to OpenAI format
 	openAIMessages := make([]openai.ChatCompletionMessage, len(messages))
 	for i, msg := range messages {
-		openAIMessages[i] = openai.ChatCompletionMessage{
+		openAIMessage := openai.ChatCompletionMessage{
 			Role:    msg.Role,
 			Content: msg.Content,
 			Name:    msg.Name,
 		}
+
+		// Handle tool calls in the message (if your Message struct has ToolCalls)
+		if len(msg.ToolCalls) > 0 {
+			toolCalls := make([]openai.ToolCall, len(msg.ToolCalls))
+			for j, tc := range msg.ToolCalls {
+				toolCalls[j] = openai.ToolCall{
+					ID:   tc.ID,
+					Type: openai.ToolType(tc.Type),
+					Function: openai.FunctionCall{
+						Name:      tc.Function.Name,
+						Arguments: tc.Function.Arguments,
+					},
+				}
+			}
+			openAIMessage.ToolCalls = toolCalls
+		}
+
+		openAIMessages[i] = openAIMessage
 	}
 
 	// Create request
@@ -130,12 +148,25 @@ func (o *OpenAILLM) Chat(ctx context.Context, messages []llm.Message, opts ...ll
 	}
 	message.SetUsage(usage)
 
-	// Handle tool calls in response
+	// Handle tool calls in response - UPDATED to support multiple tool calls
 	if len(resp.Choices[0].Message.ToolCalls) > 0 {
-		toolCall := resp.Choices[0].Message.ToolCalls[0]
-		message.FuncCall = &llm.FunctionCall{
-			Name:      toolCall.Function.Name,
-			Arguments: toolCall.Function.Arguments,
+		// Convert all tool calls, not just the first one
+		toolCalls := make([]llm.ToolCall, len(resp.Choices[0].Message.ToolCalls))
+		for i, toolCall := range resp.Choices[0].Message.ToolCalls {
+			toolCalls[i] = llm.ToolCall{
+				ID:   toolCall.ID,
+				Type: string(toolCall.Type),
+				Function: llm.FunctionCall{
+					Name:      toolCall.Function.Name,
+					Arguments: toolCall.Function.Arguments,
+				},
+			}
+		}
+		message.ToolCalls = toolCalls
+
+		// Keep backward compatibility with single FuncCall
+		if len(toolCalls) > 0 {
+			message.FuncCall = &toolCalls[0].Function
 		}
 	}
 
