@@ -23,12 +23,13 @@ type Usage struct {
 // Message represents a chat message
 
 type Message struct {
-	Role      string                 `json:"role"`
-	Content   string                 `json:"content"`
-	Name      string                 `json:"name,omitempty"`
-	FuncCall  *FunctionCall          `json:"function_call,omitempty"`
-	ToolCalls []ToolCall             `json:"tool_calls,omitempty"` // Add this
-	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	Role       string                 `json:"role"`
+	Content    string                 `json:"content"`
+	Name       string                 `json:"name,omitempty"`
+	FuncCall   *FunctionCall          `json:"function_call,omitempty"`
+	ToolCalls  []ToolCall             `json:"tool_calls,omitempty"`
+	ToolCallID string                 `json:"tool_call_id,omitempty"` // Add this field
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type ToolCall struct {

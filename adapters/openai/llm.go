@@ -57,6 +57,9 @@ func (o *OpenAILLM) Chat(ctx context.Context, messages []llm.Message, opts ...ll
 			}
 			openAIMessage.ToolCalls = toolCalls
 		}
+		if msg.ToolCallID != "" {
+			openAIMessage.ToolCallID = msg.ToolCallID
+		}
 
 		openAIMessages[i] = openAIMessage
 	}
